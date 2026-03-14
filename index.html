@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTRY: SINGULARITY v10.2</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- TensorFlow & MediaPipe -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.10.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.10.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@1.0.5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@100;400;800&display=swap');
+        
+        body {
+            background-color: #050000;
+            color: #00ffff;
+            font-family: 'JetBrains Mono', monospace;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        .crt-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+            z-index: 100;
+        }
+
+        .glitch-red {
+            animation: glitch-anim 0.2s infinite;
+            filter: contrast(200%) brightness(150%) hue-rotate(-50deg);
+        }
+
+        @keyframes glitch-anim {
+            0% { transform: translate(0); }
+            25% { transform: translate(-2px, 2px); }
+            50% { transform: translate(2px, -2px); }
+            75% { transform: translate(-1px, -1px); }
+            100% { transform: translate(0); }
+        }
+
+        .status-bar {
+            height: 4px;
+            background: #111;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .status-progress {
+            height: 100%;
+            background: #00ffff;
+            width: 0%;
+            transition: width 0.3s;
+            box-shadow: 0 0 10px #00ffff;
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col p-4 border-2 border-cyan-900">
+    <div class="crt-overlay"></div>
+
+    <!-- Header -->
+    <div class="flex justify-between items-start z-50">
+        <div>
+            <h1 class="text-xl font-black italic text-cyan-500 tracking-tighter uppercase">Sentry.Singularity.v10</h1>
+            <div id="connection-status" class="text-[8px] text-red-500 animate-pulse uppercase">Link Status: DISCONNECTED</div>
+        </div>
+        <div class="text-right">
+            <div id="xp-display" class="text-white bg-cyan-900 px-2 text-[10px]">SYNC: 0</div>
+        </div>
+    </div>
+
+    <!-- AI Interface Panel -->
+    <div class="mt-4 border border-cyan-900/40 bg-black/40 p-4 relative min-h-[90px] flex items-center">
+        <div class="absolute top-0 left-0 w-full h-[1px] bg-cyan-900/50"></div>
+        <div id="ai-text" class="text-xs text-cyan-400 italic leading-snug">
+            [СИСТЕМА]: Нажмите 'ASCEND' для инициализации биометрического захвата...
+        </div>
+        <div id="ai-spinner" class="hidden absolute right-4 top-4 text-[8px] animate-spin uppercase opacity-50">#</div>
+    </div>
+
+    <!-- Main Viewport -->
+    <div id="viewport" class="relative flex-grow my-4 bg-black border border-cyan-900/20 overflow-hidden flex flex-col items-center justify-center">
+        <video id="webcam" class="absolute inset-0 w-full h-full object-cover opacity-20 scale-x-[-1]" autoplay playsinline muted></video>
+        <canvas id="canvas" class="absolute inset-0 w-full h-full z-10 scale-x-[-1]"></canvas>
+
+        <!-- Centered UI -->
+        <div id="ui-center" class="z-20 text-center">
+            <div id="init-panel">
+                <button id="btn-start" class="px-10 py-6 border border-cyan-500 bg-cyan-500/10 hover:bg-cyan-500 hover:text-black transition-all font-bold tracking-[0.4em] uppercase">
+                    ASCEND
+                </button>
+                <div id="loading-msg" class="hidden mt-4 text-[10px] text-cyan-600 animate-pulse tracking-widest uppercase">
+                    Загрузка нейронных весов...
+                </div>
+            </div>
+
+            <div id="active-panel" class="hidden">
+                <div id="timer" class="text-9xl font-black text-white/80 drop-shadow-[0_0_30px_rgba(0,255,255,0.5)] leading-none">000</div>
+                <div class="mt-8 w-64 h-1 bg-cyan-950 mx-auto border border-cyan-900/20">
+                    <div id="drift-bar" class="h-full bg-cyan-400 transition-all duration-100" style="width: 0%"></div>
+                </div>
+                <div class="text-[8px] mt-2 opacity-50 uppercase tracking-widest">DRIFT_DETECTION</div>
+            </div>
+        </div>
+
+        <!-- Data Stream -->
+        <div class="absolute top-4 left-4 text-[7px] text-cyan-700/60 uppercase pointer-events-none">
+            DATA_STREAM: [OK]<br>
+            THROUGHPUT: 1.2GB/S<br>
+            STABILITY_INDEX: <span id="stab-idx">100</span>%
+        </div>
+    </div>
+
+    <!-- Terminal Footer -->
+    <div class="h-28 grid grid-cols-4 gap-4 z-50">
+        <div class="col-span-3 bg-black/60 border border-cyan-950 p-2 overflow-hidden flex flex-col font-mono text-[9px]">
+            <div class="text-[8px] text-cyan-900 border-b border-cyan-950 mb-1 flex justify-between">
+                <span>TERMINAL_LOG</span>
+                <span id="diagnostic-step">STEP: 0</span>
+            </div>
+            <div id="log-content" class="flex-grow overflow-y-auto text-cyan-800 space-y-0.5">
+                <div>> Waiting for operator interaction...</div>
+            </div>
+        </div>
+        <div class="flex flex-col gap-2">
+            <button id="btn-sync" disabled class="flex-grow bg-cyan-800/20 border border-cyan-600/50 text-cyan-600 font-bold uppercase text-[10px] tracking-widest disabled:opacity-30">
+                SYNC
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const apiKey = ""; 
+        const logContent = document.getElementById('log-content');
+        const aiText = document.getElementById('ai-text');
+        const driftBar = document.getElementById('drift-bar');
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        
+        let detector;
+        let baseline = null;
+        let isRunning = false;
+        let tolerance = 0;
+        let timerVal = 0;
+        let syncScore = 0;
+
+        function addLog(msg, color = 'text-cyan-800') {
+            const div = document.createElement('div');
+            div.className = color;
+            div.textContent = `> ${msg}`;
+            logContent.prepend(div);
+        }
+
+        async function speak(text) {
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance(text);
+            u.lang = 'ru-RU';
+            u.rate = 0.65;
+            u.pitch = 0.1;
+            window.speechSynthesis.speak(u);
+        }
+
+        async function callAI(prompt) {
+            document.getElementById('ai-spinner').classList.remove('hidden');
+            try {
+                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompt }] }],
+                        systemInstruction: { parts: [{ text: "Ты — SINGULARITY, ИИ-надзиратель. Тон холодный, механический, властный. Минимум слов. Ты контролируешь раба." }] }
+                    })
+                });
+                const data = await res.json();
+                const text = data.candidates[0].content.parts[0].text;
+                aiText.textContent = text;
+                speak(text);
+            } catch (e) {
+                addLog("AI_LINK_FAILURE: Offline mode active.", "text-red-800");
+                aiText.textContent = "Связь с Hive прервана. Подчиняйся локальной логике.";
+            } finally {
+                document.getElementById('ai-spinner').classList.add('hidden');
+            }
+        }
+
+        async function initSystem() {
+            document.getElementById('btn-start').classList.add('hidden');
+            document.getElementById('loading-msg').classList.remove('hidden');
+            document.getElementById('diagnostic-step').textContent = "STEP: 1/3";
+            addLog("Requesting biometric access...");
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: 640, height: 480, facingMode: 'user' } 
+                });
+                video.srcObject = stream;
+                addLog("Camera link: STABLE", "text-green-600");
+                
+                document.getElementById('diagnostic-step').textContent = "STEP: 2/3";
+                addLog("Loading Neural Mesh Engine...");
+                
+                await tf.setBackend('webgl');
+                const model = faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
+                detector = await faceLandmarksDetection.createDetector(model, {
+                    runtime: 'mediapipe',
+                    solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh'
+                });
+                
+                addLog("Engine: ONLINE", "text-green-600");
+                document.getElementById('diagnostic-step').textContent = "STEP: 3/3";
+                document.getElementById('connection-status').textContent = "Link Status: ESTABLISHED";
+                document.getElementById('connection-status').className = "text-[8px] text-green-500 uppercase";
+                
+                document.getElementById('init-panel').classList.add('hidden');
+                document.getElementById('btn-sync').disabled = false;
+                document.getElementById('btn-sync').classList.replace('bg-cyan-800/20', 'bg-cyan-600');
+                document.getElementById('btn-sync').classList.add('text-black');
+
+                await callAI("Приветствуй новый элемент системы. Объясни протокол фиксации.");
+
+            } catch (err) {
+                addLog(`CRITICAL_ERROR: ${err.message}`, "text-red-500");
+                document.getElementById('loading-msg').textContent = "ERROR: CHECK CAMERA ACCESS";
+            }
+        }
+
+        async function startSync() {
+            addLog("Handshake initiated. Fixate on screen...");
+            document.getElementById('btn-sync').disabled = true;
+            speak("Замри. Калибровка.");
+            
+            setTimeout(async () => {
+                const faces = await detector.estimateFaces(video);
+                if (faces.length > 0) {
+                    const f = faces[0];
+                    baseline = {
+                        nose: f.keypoints[1],
+                        mouth: Math.abs(f.keypoints[13].y - f.keypoints[14].y)
+                    };
+                    isRunning = true;
+                    timerVal = 300;
+                    document.getElementById('active-panel').classList.remove('hidden');
+                    addLog("Synchronization: 100%. Don't move.");
+                    await callAI("Синхронизация завершена. Начинай цикл статики. Любое движение наказуемо.");
+                    runEngine();
+                } else {
+                    addLog("Target not found. Retry calibration.", "text-red-500");
+                    document.getElementById('btn-sync').disabled = false;
+                }
+            }, 3000);
+        }
+
+        function runEngine() {
+            const ctx = canvas.getContext('2d');
+            const loop = setInterval(async () => {
+                if (!isRunning) { clearInterval(loop); return; }
+
+                const faces = await detector.estimateFaces(video);
+                if (faces.length > 0) {
+                    const f = faces[0];
+                    const nose = f.keypoints[1];
+                    const mouth = Math.abs(f.keypoints[13].y - f.keypoints[14].y);
+
+                    const nDrift = Math.hypot(nose.x - baseline.nose.x, nose.y - baseline.nose.y);
+                    const mDrift = Math.abs(mouth - baseline.mouth);
+
+                    let viol = 0;
+                    if (nDrift > 18) viol += 15;
+                    if (mDrift > 5) viol += 25;
+
+                    tolerance = viol > 0 ? tolerance + viol : Math.max(0, tolerance - 0.4);
+                    driftBar.style.width = `${Math.min(100, tolerance)}%`;
+
+                    if (tolerance >= 100) {
+                        isRunning = false;
+                        triggerPenalty();
+                    }
+
+                    // Drawing Face Data
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.fillStyle = tolerance > 70 ? 'red' : 'rgba(0, 255, 255, 0.4)';
+                    f.keypoints.forEach((kp, i) => {
+                        if (i % 12 === 0) ctx.fillRect(kp.x * (canvas.width/video.videoWidth), kp.y * (canvas.height/video.videoHeight), 1, 1);
+                    });
+                } else {
+                    tolerance += 5;
+                }
+            }, 100);
+
+            const timerItv = setInterval(() => {
+                if (!isRunning) { clearInterval(timerItv); return; }
+                if (timerVal > 0) {
+                    timerVal--;
+                    document.getElementById('timer').textContent = String(timerVal).padStart(3, '0');
+                } else {
+                    isRunning = false;
+                    finishSession();
+                }
+            }, 1000);
+        }
+
+        async function triggerPenalty() {
+            document.body.classList.add('glitch-red');
+            addLog("STABILITY_LOSS: INITIATING DISCIPLINE", "text-red-500");
+            timerVal = 120;
+            document.getElementById('timer').textContent = "120";
+            await callAI("Нарушение статики! Протокол Сингулярности нарушен. Твое искупление: 2 минуты абсолютной неподвижности.");
+            
+            const pInterval = setInterval(() => {
+                if (timerVal > 0) {
+                    timerVal--;
+                    document.getElementById('timer').textContent = String(timerVal).padStart(3, '0');
+                } else {
+                    clearInterval(pInterval);
+                    document.body.classList.remove('glitch-red');
+                    resetUI();
+                }
+            }, 1000);
+        }
+
+        async function finishSession() {
+            addLog("Protocol completed. Sync Level increased.", "text-green-500");
+            syncScore++;
+            document.getElementById('xp-display').textContent = `SYNC: ${syncScore}`;
+            await callAI("Цикл завершен успешно. Элемент подтвердил пригодность. Отдыхай до следующего вызова.");
+            resetUI();
+        }
+
+        function resetUI() {
+            document.getElementById('active-panel').classList.add('hidden');
+            document.getElementById('btn-sync').disabled = false;
+            tolerance = 0;
+            driftBar.style.width = "0%";
+        }
+
+        document.getElementById('btn-start').onclick = initSystem;
+        document.getElementById('btn-sync').onclick = startSync;
+
+    </script>
+</body>
+</html>
+
