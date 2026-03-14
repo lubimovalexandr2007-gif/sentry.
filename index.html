@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTRY RECOVERY v11.4</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;900&family=JetBrains+Mono:wght@300;800&display=swap');
+        
+        body {
+            background-color: #020202;
+            color: #00f2ff;
+            font-family: 'JetBrains Mono', monospace;
+            height: 100vh;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .hud-font { font-family: 'Orbitron', sans-serif; }
+
+        #viewport-container {
+            position: relative;
+            flex-grow: 1;
+            margin: 15px;
+            border: 1px solid #083344;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            background: #000;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            transform: scaleX(-1);
+            pointer-events: none;
+        }
+
+        .system-noise {
+            position: absolute;
+            inset: 0;
+            background: url('https://grainy-gradients.vercel.app/noise.svg');
+            opacity: 0.05;
+            pointer-events: none;
+            z-index: 5;
+        }
+
+        .status-box {
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid #00f2ff;
+            padding: 10px 20px;
+            box-shadow: 0 0 15px rgba(0, 242, 255, 0.2);
+        }
+
+        #error-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.9);
+            z-index: 100;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .pulse { animation: pulse 2s infinite; }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    
+    <header class="p-4 bg-black border-b border-cyan-950 flex justify-between items-center">
+        <div>
+            <div class="hud-font text-xs tracking-[0.3em] text-cyan-600">SENTRY PROTOCOL</div>
+            <div class="text-xl font-black hud-font">RECOVERY MODE <span class="text-cyan-400">v11.4</span></div>
+        </div>
+        <div class="text-right">
+            <div id="connection-status" class="text-[10px] text-amber-500 pulse">SYNCING...</div>
+            <div id="fps-counter" class="text-[10px] opacity-50 font-mono">FPS: --</div>
+        </div>
+    </header>
+
+    <main id="viewport-container">
+        <div id="error-overlay">
+            <div class="text-red-500 text-5xl mb-4">⚠</div>
+            <div class="hud-font text-xl mb-2">ОШИБКА ВИДЕОКАНАЛА</div>
+            <p id="error-text" class="text-xs text-gray-500 max-w-md">Доступ к камере заблокирован или устройство занято другим приложением.</p>
+            <button onclick="location.reload()" class="mt-6 px-6 py-2 border border-cyan-500 text-cyan-500 hover:bg-cyan-500 hover:text-black transition-all">ПЕРЕЗАГРУЗИТЬ</button>
+        </div>
+
+        <div class="system-noise"></div>
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="canvas"></canvas>
+
+        <!-- Центральный прицел -->
+        <div class="absolute inset-0 pointer-events-none flex items-center justify-center z-20">
+            <div class="w-20 h-20 border border-cyan-500/30 rounded-full flex items-center justify-center">
+                <div class="w-1 h-1 bg-cyan-400 rounded-full"></div>
+            </div>
+        </div>
+    </main>
+
+    <div id="boot-overlay" class="fixed inset-0 z-[200] bg-black flex flex-center items-center justify-center cursor-pointer" onclick="initProtocol()">
+        <div class="status-box flex flex-col items-center">
+            <div class="hud-font text-2xl mb-2">НАЖМИТЕ ДЛЯ ЗАПУСКА</div>
+            <div class="text-[10px] opacity-50 tracking-[0.2em]">INITIATE HARDWARE LINK</div>
+        </div>
+    </div>
+
+    <footer class="p-3 bg-black border-t border-cyan-950 flex gap-4 overflow-hidden whitespace-nowrap text-[9px] uppercase tracking-tighter">
+        <div class="text-cyan-400">Status: <span id="log-status">Standby</span></div>
+        <div class="text-gray-600">|</div>
+        <div id="log-msg" class="text-gray-500 italic">Ожидание взаимодействия с пользователем...</div>
+    </footer>
+
+    <script type="module">
+        import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const logMsg = document.getElementById('log-msg');
+        const logStatus = document.getElementById('log-status');
+        const errorOverlay = document.getElementById('error-overlay');
+        const errorText = document.getElementById('error-text');
+
+        let faceLandmarker;
+        let lastVideoTime = -1;
+
+        // Делаем функцию глобальной для вызова из HTML
+        window.initProtocol = async () => {
+            document.getElementById('boot-overlay').style.display = 'none';
+            logStatus.innerText = "INITIALIZING";
+            logMsg.innerText = "Запрос доступа к оборудованию...";
+
+            try {
+                // Пытаемся захватить видео с разными параметрами
+                const constraints = [
+                    { video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" } },
+                    { video: true } // Фоллбек на любые доступные параметры
+                ];
+
+                let stream = null;
+                for (let constraint of constraints) {
+                    try {
+                        stream = await navigator.mediaDevices.getUserMedia(constraint);
+                        if (stream) break;
+                    } catch (e) {
+                        console.warn("Constraint failed:", constraint, e);
+                    }
+                }
+
+                if (!stream) throw new Error("Не удалось найти доступную камеру.");
+
+                video.srcObject = stream;
+                
+                // Важно: ждем начала воспроизведения
+                video.onloadedmetadata = () => {
+                    video.play().catch(e => console.error("Play error:", e));
+                    logStatus.innerText = "LINK ACTIVE";
+                    logMsg.innerText = "Канал установлен. Загрузка ИИ...";
+                    startAI();
+                };
+
+            } catch (err) {
+                console.error(err);
+                errorOverlay.style.display = 'flex';
+                errorText.innerText = err.message;
+                logStatus.innerText = "CRITICAL ERROR";
+                logMsg.innerText = "Сбой оборудования.";
+            }
+        };
+
+        async function startAI() {
+            try {
+                const filesetResolver = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+                );
+                faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numFaces: 1
+                });
+                
+                logMsg.innerText = "Протокол SENTRY активен. Визуальный контакт установлен.";
+                document.getElementById('connection-status').innerText = "LIVE";
+                document.getElementById('connection-status').className = "text-[10px] text-cyan-400";
+                
+                render();
+            } catch (err) {
+                logMsg.innerText = "ИИ не загружен, только видеоканал.";
+            }
+        }
+
+        function render() {
+            if (video.readyState >= 2) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                if (faceLandmarker) {
+                    let startTimeMs = performance.now();
+                    if (lastVideoTime !== video.currentTime) {
+                        lastVideoTime = video.currentTime;
+                        const results = faceLandmarker.detectForVideo(video, startTimeMs);
+                        
+                        if (results.faceLandmarks) {
+                            for (const landmarks of results.faceLandmarks) {
+                                drawFace(landmarks);
+                            }
+                        }
+                    }
+                }
+            }
+            requestAnimationFrame(render);
+        }
+
+        function drawFace(landmarks) {
+            ctx.strokeStyle = "rgba(0, 242, 255, 0.5)";
+            ctx.lineWidth = 1;
+            
+            // Рисуем упрощенную маску для производительности
+            ctx.beginPath();
+            // Овал лица
+            for(let i=0; i<168; i+=5) {
+                const pt = landmarks[i];
+                ctx.lineTo(pt.x * canvas.width, pt.y * canvas.height);
+            }
+            ctx.stroke();
+
+            // Точка на носу (центр захвата)
+            const nose = landmarks[1];
+            ctx.fillStyle = "#ff0055";
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = "#ff0055";
+            ctx.beginPath();
+            ctx.arc(nose.x * canvas.width, nose.y * canvas.height, 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+        }
+    </script>
+</body>
+</html>
+
