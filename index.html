@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTRY: HEAD-TRACK v13.0</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;900&family=JetBrains+Mono:wght@300;800&display=swap');
+        
+        body {
+            background-color: #010101;
+            color: #00f2ff;
+            font-family: 'JetBrains Mono', monospace;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        .hud-font { font-family: 'Orbitron', sans-serif; }
+
+        #viewport-container {
+            position: relative;
+            flex-grow: 1;
+            margin: 10px;
+            background: #000;
+            border: 1px solid #083344;
+            overflow: hidden;
+        }
+
+        video {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            opacity: 0.5;
+        }
+
+        canvas {
+            position: absolute;
+            inset: 0;
+            z-index: 10;
+            transform: scaleX(-1);
+            pointer-events: none;
+        }
+
+        .gyro-box {
+            position: absolute;
+            right: 20px;
+            top: 20px;
+            width: 120px;
+            height: 120px;
+            border: 1px solid rgba(0, 242, 255, 0.2);
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 30;
+        }
+
+        .gyro-line {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 60px;
+            height: 2px;
+            background: #00f2ff;
+            transform-origin: center;
+            box-shadow: 0 0 10px #00f2ff;
+        }
+
+        .axis-indicator {
+            font-size: 8px;
+            color: #00f2ff;
+            position: absolute;
+        }
+
+        .penalty-screen {
+            animation: red-alert 0.1s infinite;
+            background: rgba(255, 0, 0, 0.2) !important;
+        }
+
+        @keyframes red-alert {
+            0% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body class="flex flex-col">
+
+    <header class="p-4 border-b border-cyan-900 bg-black flex justify-between items-center z-50">
+        <div>
+            <h1 class="hud-font text-lg font-black text-cyan-500">SENTRY // GYRO-SYNC</h1>
+            <div id="status-tag" class="text-[9px] text-cyan-700">GYRO_STABILITY: UNKNOWN</div>
+        </div>
+        <div id="axes" class="flex gap-3 text-[9px] font-bold text-cyan-600">
+            <span>PITCH: <span id="val-pitch">0</span>°</span>
+            <span>YAW: <span id="val-yaw">0</span>°</span>
+            <span>ROLL: <span id="val-roll">0</span>°</span>
+        </div>
+    </header>
+
+    <main id="viewport-container">
+        <!-- Виртуальный гироскоп (имитация наушников) -->
+        <div class="gyro-box flex items-center justify-center">
+            <div id="gyro-horizon" class="gyro-line"></div>
+            <div class="axis-indicator top-1 left-1">HEAD_GYRO</div>
+            <div class="axis-indicator bottom-1 right-1 text-[7px]" id="gyro-status">IDLE</div>
+        </div>
+
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="canvas"></canvas>
+
+        <div id="boot-screen" class="absolute inset-0 z-50 flex items-center justify-center bg-black">
+            <button id="btn-init" class="px-10 py-5 border-2 border-cyan-500 hud-font text-cyan-500 hover:bg-cyan-500 hover:text-black transition-all">
+                CONNECT TO SENSORS
+            </button>
+        </div>
+
+        <div id="hud" class="hidden absolute inset-0 z-40 flex flex-col items-center justify-center pointer-events-none">
+            <div id="timer" class="hud-font text-9xl font-black text-white/80">300</div>
+            <div class="text-[10px] tracking-[1em] text-cyan-500 mt-4">DO NOT ROTATE</div>
+        </div>
+    </main>
+
+    <footer class="p-4 bg-black border-t border-cyan-900 flex gap-4 items-center">
+        <div id="log" class="flex-grow text-[10px] italic text-cyan-800 uppercase">
+            > Ожидание авторизации...
+        </div>
+        <button id="btn-lock" disabled class="bg-cyan-900 px-6 py-2 text-xs font-bold uppercase disabled:opacity-20 transition-all">
+            LOCK GYRO
+        </button>
+    </footer>
+
+    <script type="module">
+        import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const gyroLine = document.getElementById('gyro-horizon');
+        
+        let faceLandmarker;
+        let isReady = false;
+        let isLocked = false;
+        let baselineRotation = { pitch: 0, yaw: 0, roll: 0 };
+        let timer = 300;
+
+        function updateLog(msg, color = 'text-cyan-800') {
+            const l = document.getElementById('log');
+            l.innerText = `> ${msg}`;
+            l.className = `flex-grow text-[10px] italic uppercase ${color}`;
+        }
+
+        async function init() {
+            updateLog("Загрузка сенсоров...");
+            try {
+                const filesetResolver = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+                faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numFaces: 1,
+                    minFaceDetectionConfidence: 0.3, // Сделали более чувствительным
+                    minFacePresenceConfidence: 0.3
+                });
+                isReady = true;
+                updateLog("Сенсоры готовы. Подключите видеоканал.");
+            } catch (e) {
+                updateLog("Ошибка калибровки.", "text-red-500");
+            }
+        }
+
+        async function start() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    video.play();
+                    document.getElementById('boot-screen').style.display = 'none';
+                    document.getElementById('btn-lock').disabled = false;
+                    document.getElementById('btn-lock').classList.add('bg-cyan-500', 'text-black');
+                    updateLog("Поток активен. Центрируйте голову.");
+                    loop();
+                };
+            } catch (e) {
+                alert("Камера недоступна.");
+            }
+        }
+
+        function calculateRotation(landmarks) {
+            // Упрощенный расчет углов на основе ключевых точек лица
+            const nose = landmarks[1];
+            const leftEye = landmarks[33];
+            const rightEye = landmarks[263];
+            const chin = landmarks[152];
+
+            // ROLL (Наклон к плечам)
+            const dx = rightEye.x - leftEye.x;
+            const dy = rightEye.y - leftEye.y;
+            const roll = Math.atan2(dy, dx) * (180 / Math.PI);
+
+            // YAW (Поворот влево-вправо)
+            const eyeDist = Math.hypot(dx, dy);
+            const noseOffset = (nose.x - leftEye.x) / (rightEye.x - leftEye.x);
+            const yaw = (noseOffset - 0.5) * 100;
+
+            // PITCH (Наклон вверх-вниз)
+            const eyeCenterY = (leftEye.y + rightEye.y) / 2;
+            const pitch = (nose.y - eyeCenterY) * 500 - 20;
+
+            return { pitch, yaw, roll };
+        }
+
+        function loop() {
+            canvas.width = video.clientWidth;
+            canvas.height = video.clientHeight;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const results = faceLandmarker.detectForVideo(video, performance.now());
+            if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+                const landmarks = results.faceLandmarks[0];
+                const rot = calculateRotation(landmarks);
+
+                // Обновление HUD
+                document.getElementById('val-pitch').innerText = Math.round(rot.pitch);
+                document.getElementById('val-yaw').innerText = Math.round(rot.yaw);
+                document.getElementById('val-roll').innerText = Math.round(rot.roll);
+                gyroLine.style.transform = `translate(-50%, -50%) rotate(${rot.roll}deg)`;
+
+                // Визуализация точек (сетка ИИ)
+                ctx.fillStyle = isLocked ? "#f00" : "#00f2ff";
+                landmarks.forEach((p, i) => {
+                    if (i % 40 === 0) ctx.fillRect(p.x * canvas.width, p.y * canvas.height, 2, 2);
+                });
+
+                if (isLocked) {
+                    checkViolation(rot);
+                }
+            } else {
+                if (isLocked) {
+                    updateLog("SIGNAL LOST: DO NOT HIDE FACE", "text-red-500");
+                }
+            }
+            requestAnimationFrame(loop);
+        }
+
+        function checkViolation(rot) {
+            const dP = Math.abs(rot.pitch - baselineRotation.pitch);
+            const dY = Math.abs(rot.yaw - baselineRotation.yaw);
+            const dR = Math.abs(rot.roll - baselineRotation.roll);
+
+            if (dP > 8 || dY > 10 || dR > 5) {
+                isLocked = false;
+                document.getElementById('viewport-container').classList.add('penalty-screen');
+                updateLog("GYRO VIOLATION: POSITION RESET", "text-red-500");
+                setTimeout(() => location.reload(), 3000);
+            }
+        }
+
+        document.getElementById('btn-init').onclick = () => {
+            init();
+            start();
+        };
+
+        document.getElementById('btn-lock').onclick = () => {
+            const results = faceLandmarker.detectForVideo(video, performance.now());
+            if (results.faceLandmarks?.[0]) {
+                baselineRotation = calculateRotation(results.faceLandmarks[0]);
+                isLocked = true;
+                timer = 300;
+                document.getElementById('hud').classList.remove('hidden');
+                document.getElementById('btn-lock').disabled = true;
+                document.getElementById('gyro-status').innerText = "LOCKED";
+                updateLog("GYRO LOCKED. PROTOCOL INITIATED.", "text-green-500");
+                
+                const t = setInterval(() => {
+                    if (!isLocked) { clearInterval(t); return; }
+                    if (timer > 0) {
+                        timer--;
+                        document.getElementById('timer').innerText = timer;
+                    } else {
+                        clearInterval(t);
+                        updateLog("PROTOCOL COMPLETE. YOU ARE STABLE.", "text-green-500");
+                    }
+                }, 1000);
+            }
+        };
+    </script>
+</body>
+</html>
+
