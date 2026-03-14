@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTRY // SINGULARITY EXTREME</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;900&family=JetBrains+Mono:wght@300;800&display=swap');
+        body { background-color: #050000; color: #ff003c; font-family: 'JetBrains Mono', monospace; overflow: hidden; height: 100vh; }
+        .hud-font { font-family: 'Orbitron', sans-serif; }
+        .glitch-active { animation: glitch-red 0.1s infinite; background: #ff003c !important; }
+        @keyframes glitch-red {
+            0% { transform: translate(0); filter: invert(0); }
+            50% { transform: translate(-3px, 3px); filter: invert(1); }
+            100% { transform: translate(3px, -3px); }
+        }
+        .scanlines {
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            background-size: 100% 2px, 3px 100%;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body class="flex flex-col p-4">
+
+    <div class="scanlines absolute inset-0 z-50"></div>
+
+    <!-- Header -->
+    <header class="flex justify-between items-center border-b border-red-950 pb-2 z-[60]">
+        <div>
+            <h1 class="hud-font text-xl font-black text-red-600 tracking-tighter uppercase">Sentry.Singularity</h1>
+            <div id="status-display" class="text-[8px] text-red-900 uppercase tracking-widest">System: Offline</div>
+        </div>
+        <div class="flex items-center gap-4">
+            <div class="text-right">
+                <div class="text-[8px] uppercase text-red-900 mb-1">Intensity: <span id="int-val">5</span></div>
+                <input type="range" id="intensity" min="1" max="10" value="5" class="w-24 accent-red-600">
+            </div>
+            <div class="bg-red-950/30 border border-red-900 px-3 py-1 text-[10px] hud-font">
+                PUNISH: <span id="punish-count">0</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- AI Output -->
+    <div class="mt-4 p-4 bg-red-950/5 border-l-2 border-red-600 min-h-[70px] z-[60]">
+        <div id="ai-text" class="text-xs italic text-red-400">
+            [SENTRY]: Нажмите ПРИНЯТЬ КОНТРОЛЬ для активации биометрического канала.
+        </div>
+    </div>
+
+    <!-- Main View -->
+    <div id="main-view" class="relative flex-grow my-4 bg-black border border-red-900/20 overflow-hidden flex items-center justify-center">
+        <video id="video" class="absolute inset-0 w-full h-full object-cover opacity-20 grayscale scale-x-[-1]" playsinline muted></video>
+        <canvas id="canvas" class="absolute inset-0 w-full h-full z-10 scale-x-[-1]"></canvas>
+
+        <!-- Initial Screen -->
+        <div id="boot-screen" class="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm">
+            <button id="start-btn" class="px-10 py-5 border-2 border-red-600 hud-font text-red-500 font-bold hover:bg-red-600 hover:text-black transition-all">
+                ПРИНЯТЬ КОНТРОЛЬ
+            </button>
+            <p class="mt-4 text-[9px] text-red-900 uppercase tracking-[0.3em]">Разрешение камеры и звука обязательно</p>
+        </div>
+
+        <!-- HUD -->
+        <div id="hud" class="hidden absolute inset-0 z-20 flex flex-col items-center justify-center pointer-events-none">
+            <div id="timer" class="hud-font text-[12rem] font-black text-white/90 leading-none">000</div>
+            <div class="w-64 h-1 bg-red-950 mt-8 relative">
+                <div id="drift-bar" class="absolute left-0 top-0 h-full bg-red-600" style="width: 0%"></div>
+            </div>
+            <div id="warning" class="mt-2 text-[10px] uppercase text-red-600 opacity-0 animate-pulse">ОБНАРУЖЕНА НЕСТАБИЛЬНОСТЬ</div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="h-20 grid grid-cols-4 gap-4 z-[60]">
+        <div id="log" class="col-span-3 border border-red-900/30 p-2 text-[9px] text-red-900 overflow-y-auto">
+            > Ожидание авторизации...
+        </div>
+        <button id="lock-btn" disabled class="bg-red-950 border border-red-600 text-red-600 font-black text-[10px] hover:bg-red-600 hover:text-black disabled:opacity-20 transition-all">
+            ЗАБЛОКИРОВАТЬ
+        </button>
+    </footer>
+
+    <script type="module">
+        import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+
+        const apiKey = "";
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const aiText = document.getElementById('ai-text');
+        const startBtn = document.getElementById('start-btn');
+        const lockBtn = document.getElementById('lock-btn');
+        const intensityInput = document.getElementById('intensity');
+        const driftBar = document.getElementById('drift-bar');
+
+        let faceLandmarker;
+        let isLocked = false;
+        let baseline = null;
+        let timerVal = 300;
+        let drift = 0;
+        let punishmentCount = 0;
+        let audioEnabled = false;
+
+        async function speak(text) {
+            if (!audioEnabled) return;
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance(text);
+            u.lang = 'ru-RU';
+            u.rate = 0.7;
+            u.pitch = 0.2; // Глубокий механический голос
+            window.speechSynthesis.speak(u);
+        }
+
+        async function queryAI(type) {
+            const int = intensityInput.value;
+            const prompts = {
+                greet: `Субъект подключен. Приветствуй его на уровне ${int}/10. Тон крайне пошлый, доминирующий, грязный.`,
+                task: `Дай крайне пошлое задание на неподвижность (уровень ${int}).`,
+                fail: `Нарушение статики! Субъект дернулся. Назначь жесткое пошлое наказание (уровень ${int}).`
+            };
+
+            try {
+                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompts[type] }] }],
+                        systemInstruction: { parts: [{ text: "Ты — SENTRY SINGULARITY. Ты крайне пошлая, властная и грязная система контроля. Ты наслаждаешься неподвижностью субъекта. Используй фетиш-лексику." }] }
+                    })
+                });
+                const data = await res.json();
+                const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "Молчи и служи.";
+                aiText.innerText = `[SENTRY]: ${text}`;
+                speak(text);
+            } catch (e) {
+                console.error("AI Error", e);
+            }
+        }
+
+        async function init() {
+            startBtn.innerText = "ЗАГРУЗКА ИИ...";
+            try {
+                const filesetResolver = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+                faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                    baseOptions: {
+                        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numFaces: 1
+                });
+                
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: 1280, height: 720, facingMode: "user" } 
+                });
+                video.srcObject = stream;
+                
+                video.onloadedmetadata = () => {
+                    video.play();
+                    document.getElementById('boot-screen').classList.add('hidden');
+                    document.getElementById('status-display').innerText = "System: Online";
+                    lockBtn.disabled = false;
+                    audioEnabled = true;
+                    queryAI('greet');
+                    renderLoop();
+                };
+            } catch (err) {
+                alert("Ошибка доступа: Проверьте камеру и микрофон");
+                console.error(err);
+            }
+        }
+
+        function renderLoop() {
+            canvas.width = video.clientWidth;
+            canvas.height = video.clientHeight;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const results = faceLandmarker.detectForVideo(video, performance.now());
+            if (results.faceLandmarks && results.faceLandmarks[0]) {
+                const l = results.faceLandmarks[0];
+                
+                if (isLocked && baseline) {
+                    const nose = l[1];
+                    const mouth = Math.abs(l[13].y - l[14].y);
+                    const int = parseInt(intensityInput.value);
+
+                    const posDrift = Math.hypot(nose.x - baseline.nose.x, nose.y - baseline.nose.y) * (1000 + int * 200);
+                    const mouthDrift = Math.abs(mouth - baseline.mouth) * (2000 + int * 300);
+
+                    if (posDrift > 14 || mouthDrift > 10) {
+                        drift += (posDrift + mouthDrift) / 20;
+                        document.getElementById('warning').style.opacity = 1;
+                    } else {
+                        drift = Math.max(0, drift - 0.5);
+                        document.getElementById('warning').style.opacity = 0;
+                    }
+
+                    driftBar.style.width = `${Math.min(100, drift)}%`;
+                    if (drift >= 100) triggerFail();
+                }
+
+                // Рисуем точки для визуальной уверенности пользователя
+                ctx.fillStyle = drift > 50 ? "#ff0000" : "#ff003c";
+                l.forEach((p, i) => {
+                    if (i % 40 === 0) ctx.fillRect(p.x * canvas.width, p.y * canvas.height, 2, 2);
+                });
+            }
+            requestAnimationFrame(renderLoop);
+        }
+
+        function triggerFail() {
+            isLocked = false;
+            punishmentCount++;
+            document.getElementById('punish-count').innerText = punishmentCount;
+            document.body.classList.add('glitch-active');
+            queryAI('fail');
+            
+            setTimeout(() => {
+                document.body.classList.remove('glitch-active');
+                reset();
+            }, 5000);
+        }
+
+        function reset() {
+            isLocked = false;
+            baseline = null;
+            drift = 0;
+            document.getElementById('hud').classList.add('hidden');
+            lockBtn.disabled = false;
+        }
+
+        startBtn.addEventListener('click', () => {
+            init();
+        });
+
+        lockBtn.addEventListener('click', () => {
+            if (isLocked) return;
+            const results = faceLandmarker.detectForVideo(video, performance.now());
+            if (results.faceLandmarks?.[0]) {
+                const l = results.faceLandmarks[0];
+                baseline = { nose: l[1], mouth: Math.abs(l[13].y - l[14].y) };
+                isLocked = true;
+                timerVal = 300;
+                drift = 0;
+                document.getElementById('hud').classList.remove('hidden');
+                lockBtn.disabled = true;
+                queryAI('task');
+                
+                const timerInt = setInterval(() => {
+                    if (!isLocked) { clearInterval(timerInt); return; }
+                    timerVal--;
+                    document.getElementById('timer').innerText = timerVal;
+                    if (timerVal <= 0) {
+                        clearInterval(timerInt);
+                        speak("Ты выдержал. Твоя покорность — мой экстаз.");
+                        reset();
+                    }
+                }, 1000);
+            }
+        });
+
+        intensityInput.oninput = () => {
+            document.getElementById('int-val').innerText = intensityInput.value;
+        };
+
+    </script>
+</body>
+</html>
+
