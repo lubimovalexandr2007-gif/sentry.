@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENTRY EXTREME // CONTROL</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;900&family=JetBrains+Mono:wght@300;800&display=swap');
+        
+        body {
+            background-color: #050000;
+            color: #ff003c;
+            font-family: 'JetBrains Mono', monospace;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .hud-font { font-family: 'Orbitron', sans-serif; }
+
+        #viewport-container {
+            position: relative;
+            flex-grow: 1;
+            margin: 10px;
+            background: #000;
+            border: 1px solid #440808;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        video {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            opacity: 0.3;
+            filter: grayscale(1) contrast(1.5) brightness(0.6);
+        }
+
+        canvas {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            transform: scaleX(-1);
+            pointer-events: none;
+        }
+
+        .level-slider {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 4px;
+            background: #220000;
+            outline: none;
+            border: 1px solid #440000;
+        }
+
+        .level-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #ff003c;
+            cursor: pointer;
+            border-radius: 0;
+            box-shadow: 0 0 10px #ff003c;
+        }
+
+        .glitch-red {
+            animation: glitch-r 0.15s infinite;
+        }
+
+        @keyframes glitch-r {
+            0% { transform: translate(0); filter: hue-rotate(0deg); }
+            50% { transform: translate(-3px, 1px); filter: contrast(300%) invert(0.1); }
+            100% { transform: translate(3px, -1px); }
+        }
+
+        .task-box {
+            background: rgba(15, 0, 0, 0.9);
+            border-left: 4px solid #ff003c;
+            box-shadow: 0 0 20px rgba(255, 0, 60, 0.1);
+        }
+
+        #boot-screen {
+            background: radial-gradient(circle, #220000 0%, #000 80%);
+        }
+    </style>
+</head>
+<body>
+
+    <header class="p-4 bg-black border-b border-red-950 flex justify-between items-center z-50">
+        <div>
+            <h1 class="hud-font text-xl font-black italic text-red-600 tracking-tighter">SENTRY // EXTREME v15</h1>
+            <div id="status-text" class="text-[9px] uppercase text-red-900 tracking-[0.3em]">Neural Inhibitor: Standby</div>
+        </div>
+        <div class="flex gap-6 items-center">
+            <div class="w-32 text-center">
+                <div class="text-[8px] uppercase text-red-800 mb-1">Intensity Level: <span id="level-val">5</span></div>
+                <input type="range" min="1" max="10" value="5" class="level-slider" id="level-range">
+            </div>
+            <div id="score" class="hud-font text-sm bg-red-950/30 border border-red-900 px-4 py-1 text-red-500">
+                PUNISHED: 0
+            </div>
+        </div>
+    </header>
+
+    <div id="task-display" class="mx-4 mt-2 p-4 task-box min-h-[90px] flex flex-col justify-center">
+        <div class="text-[10px] uppercase text-red-900 mb-1 font-bold">Current Directive:</div>
+        <div id="ai-instruction" class="text-xs italic text-red-400">
+            [SENTRY]: Ожидаю подключения субъекта. Выберите уровень интенсивности и инициируйте контакт.
+        </div>
+    </div>
+
+    <main id="viewport-container">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="canvas"></canvas>
+
+        <div id="boot-screen" class="absolute inset-0 z-50 flex items-center justify-center">
+            <button id="btn-start" class="px-14 py-6 border-2 border-red-600 hud-font text-red-500 text-xl font-bold hover:bg-red-600 hover:text-black transition-all duration-500 shadow-[0_0_30px_rgba(255,0,60,0.3)]">
+                SUBMIT TO SENTRY
+            </button>
+        </div>
+
+        <div id="hud" class="hidden absolute inset-0 z-40 flex flex-col items-center justify-center pointer-events-none">
+            <div id="timer" class="hud-font text-[10rem] font-black text-white/80 leading-none">300</div>
+            <div class="w-64 h-1 bg-red-950 mt-8 relative overflow-hidden">
+                <div id="drift-progress" class="absolute left-0 top-0 h-full bg-red-600 shadow-[0_0_15px_#ff003c]" style="width: 0%"></div>
+            </div>
+            <div id="instability-warning" class="text-[10px] uppercase tracking-[0.4em] text-red-700 mt-4 opacity-0">INSTABILITY DETECTED</div>
+        </div>
+    </main>
+
+    <footer class="h-24 mx-4 mb-4 grid grid-cols-4 gap-4">
+        <div class="col-span-3 bg-black border border-red-950 p-2 font-mono text-[9px] text-red-900 overflow-hidden overflow-y-auto" id="logs">
+            <div>> Waiting for biometric link...</div>
+        </div>
+        <button id="btn-lock" disabled class="bg-red-950 border border-red-600 text-red-600 font-black uppercase text-xs hover:bg-red-600 hover:text-black transition-all disabled:opacity-20">
+            INITIALIZE
+        </button>
+    </footer>
+
+    <script type="module">
+        import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+
+        const apiKey = ""; 
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const aiInstruction = document.getElementById('ai-instruction');
+        const levelRange = document.getElementById('level-range');
+        const levelVal = document.getElementById('level-val');
+        
+        let faceLandmarker;
+        let isAiReady = false;
+        let isLocked = false;
+        let baseline = null;
+        let timerVal = 300;
+        let drift = 0;
+        let punishments = 0;
+        let lastVideoTime = -1;
+
+        levelRange.oninput = () => levelVal.innerText = levelRange.value;
+
+        async function speak(text) {
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance(text);
+            u.lang = 'ru-RU'; u.rate = 0.65; u.pitch = 0.4;
+            window.speechSynthesis.speak(u);
+        }
+
+        async function getSentryCommand(type) {
+            const level = levelRange.value;
+            const prompts = {
+                start: `Приветствуй субъект на уровне сложности ${level} из 10. Тон максимально доминирующий, пошлый и унижающий. Опирайся на фетиши контроля, послушания и выносливости.`,
+                task: `Дай пошлое и унизительное задание для сохранения неподвижности на уровне ${level}/10. Например, заставить держать определенное выражение лица или смотреть только в одну точку.`,
+                violation: `Субъект дернулся. Выдай крайне жесткое, пошлое и грязное наказание. Смейся над его слабостью. Уровень ${level}/10.`
+            };
+
+            try {
+                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompts[type] }] }],
+                        systemInstruction: { parts: [{ text: "Ты — SENTRY EXTREME, доминирующая и крайне пошлая система контроля. Твой голос — это закон. Ты используешь грязный язык, унижения и фетиш-терминологию. Ты ненавидишь слабость и обожаешь наказывать." }] }
+                    })
+                });
+                const data = await res.json();
+                const text = data.candidates[0].content.parts[0].text;
+                aiInstruction.innerText = `[SENTRY]: ${text}`;
+                speak(text);
+            } catch (e) {
+                aiInstruction.innerText = "[SENTRY]: СЛУШАЙСЯ МОЕГО ГОЛОСА. НЕ ДВИГАЙСЯ.";
+            }
+        }
+
+        async function initSystems() {
+            const filesetResolver = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+            faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", numFaces: 1, minFaceDetectionConfidence: 0.4
+            });
+            isAiReady = true;
+            document.getElementById('status-text').innerText = "Neural Inhibitor: Active";
+        }
+
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    video.play();
+                    document.getElementById('boot-screen').style.display = 'none';
+                    document.getElementById('btn-lock').disabled = false;
+                    document.getElementById('btn-lock').classList.replace('bg-red-950', 'bg-red-600');
+                    document.getElementById('btn-lock').classList.add('text-black');
+                    getSentryCommand('start');
+                    loop();
+                };
+            } catch (e) { alert("Camera Error"); }
+        }
+
+        function loop() {
+            canvas.width = video.clientWidth; canvas.height = video.clientHeight;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (isAiReady && video.currentTime !== lastVideoTime) {
+                lastVideoTime = video.currentTime;
+                const results = faceLandmarker.detectForVideo(video, performance.now());
+                
+                if (results.faceLandmarks?.[0]) {
+                    const l = results.faceLandmarks[0];
+                    if (isLocked && baseline) {
+                        const nose = l[1];
+                        const mouth = Math.abs(l[13].y - l[14].y);
+                        const levelFactor = levelRange.value * 2;
+                        
+                        const pDrift = Math.hypot(nose.x - baseline.nose.x, nose.y - baseline.nose.y) * (1000 + levelFactor * 100);
+                        const mDrift = Math.abs(mouth - baseline.mouth) * (1500 + levelFactor * 100);
+                        
+                        if (pDrift > 15 || mDrift > 10) {
+                            drift += (pDrift + mDrift) / 20;
+                            document.getElementById('instability-warning').style.opacity = '1';
+                        } else {
+                            drift = Math.max(0, drift - 0.5);
+                            document.getElementById('instability-warning').style.opacity = '0';
+                        }
+
+                        document.getElementById('drift-progress').style.width = `${Math.min(100, drift)}%`;
+                        if (drift >= 100) triggerViolation();
+                    }
+
+                    ctx.fillStyle = drift > 60 ? "#ff0000" : "rgba(255, 0, 60, 0.3)";
+                    l.forEach((p, i) => { if (i % 35 === 0) ctx.fillRect(p.x * canvas.width, p.y * canvas.height, 2, 2); });
+                }
+            }
+            requestAnimationFrame(loop);
+        }
+
+        document.getElementById('btn-start').onclick = () => { initSystems(); startCamera(); };
+
+        document.getElementById('btn-lock').onclick = () => {
+            if (isLocked) return;
+            getSentryCommand('task');
+            setTimeout(() => {
+                const results = faceLandmarker.detectForVideo(video, performance.now());
+                if (results.faceLandmarks?.[0]) {
+                    const l = results.faceLandmarks[0];
+                    baseline = { nose: { x: l[1].x, y: l[1].y }, mouth: Math.abs(l[13].y - l[14].y) };
+                    isLocked = true; drift = 0; timerVal = 300;
+                    document.getElementById('hud').classList.remove('hidden');
+                    document.getElementById('btn-lock').disabled = true;
+                    startTimer();
+                }
+            }, 3000);
+        };
+
+        function startTimer() {
+            const clock = setInterval(() => {
+                if (!isLocked) { clearInterval(clock); return; }
+                if (timerVal > 0) {
+                    timerVal--;
+                    document.getElementById('timer').innerText = timerVal;
+                } else {
+                    clearInterval(clock);
+                    speak("Ты выдержал. Твое послушание вознаграждено.");
+                    reset();
+                }
+            }, 1000);
+        }
+
+        function triggerViolation() {
+            isLocked = false;
+            punishments++;
+            document.getElementById('score').innerText = `PUNISHED: ${punishments}`;
+            document.getElementById('viewport-container').classList.add('glitch-red');
+            getSentryCommand('violation');
+            setTimeout(() => {
+                document.getElementById('viewport-container').classList.remove('glitch-red');
+                reset();
+            }, 6000);
+        }
+
+        function reset() {
+            isLocked = false; baseline = null; drift = 0;
+            document.getElementById('hud').classList.add('hidden');
+            document.getElementById('btn-lock').disabled = false;
+            document.getElementById('drift-progress').style.width = "0%";
+        }
+    </script>
+</body>
+</html>
+
